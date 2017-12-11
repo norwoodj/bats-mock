@@ -1,108 +1,134 @@
 #!/usr/bin/env bash
-set -e
 
-status=0
-program="${0##*/}"
-PROGRAM="$(echo "$program" | tr a-z- A-Z_)"
+: ${BATS_TMPDIR:="/tmp"}
+: ${BATS_MOCK_TMPDIR:="${BATS_TMPDIR}"}
+: ${BATS_MOCK_BINDIR:="${BATS_MOCK_TMPDIR}/bin"}
+: ${BATS_MOCK_ANY_ARG_SENTINEL:="__ANY__"}
 
-_STUB_PLAN="${PROGRAM}_STUB_PLAN"
-_STUB_RUN="${PROGRAM}_STUB_RUN"
-_STUB_INDEX="${PROGRAM}_STUB_INDEX"
-_STUB_RESULT="${PROGRAM}_STUB_RESULT"
-_STUB_END="${PROGRAM}_STUB_END"
-_STUB_DEBUG="${PROGRAM}_STUB_DEBUG"
+function clean_json_input {
+    local input_file=${1}
+    cat "${input_file}" | base64 --wrap=0
+}
 
-if [ -n "${!_STUB_DEBUG}" ]; then
-  echo "$program" "$@" >&${!_STUB_DEBUG}
-fi
+function save_error {
+    local stub_run_error_file=${1}
+    local error_message=${2}
+    local expected_arg_file=${3}
+    local actual_arg_file=${4}
 
-[ -e "${!_STUB_PLAN}" ] || exit 1
-[ -n "${!_STUB_RUN}" ] || eval "${_STUB_RUN}"="${BATS_MOCK_TMPDIR}/${program}-stub-run"
+    jq . > "${stub_run_error_file}" <<EOF
+{
+    "message": "${error_message}",
+    "expected": "$(clean_json_input "${expected_arg_file}")",
+    "actual": "$(clean_json_input "${actual_arg_file}")"
+}
+EOF
+}
 
+function is_call_more_than_planned {
+    local stub_index=${1}
+    local stub_plan_file=${2}
 
-# Initialize or load the stub run information.
-eval "${_STUB_INDEX}"=1
-eval "${_STUB_RESULT}"=0
-[ ! -e "${!_STUB_RUN}" ] || source "${!_STUB_RUN}"
+    [[ "${stub_index}" -ge "$(wc -l < "${stub_plan_file}")" ]]
+}
 
-
-# Loop over each line in the plan.
-index=0
-while IFS= read -r line; do
-  index=$(($index + 1))
-
-  if [ -z "${!_STUB_END}" ] && [ $index -eq "${!_STUB_INDEX}" ]; then
-    # We found the plan line we're interested in.
-    # Start off by assuming success.
-    result=0
-
-    # Split the line into an array of arguments to
-    # match and a command to run to produce output.
-    command=" $line"
-    if [ "$command" != "${command/ : }" ]; then
-      patterns="${command%% : *}"
-      command="${command#* : }"
-    fi
-
-    # Naively split patterns by whitespace for now.
-    # In the future, use a sed script to split while
-    # respecting quoting.
-    set -f
-    patterns=($patterns)
-    set +f
-    arguments=("$@")
-
-    # Match the expected argument patterns to actual
-    # arguments.
-    for (( i=0; i<${#patterns[@]}; i++ )); do
-      pattern="${patterns[$i]}"
-      argument="${arguments[$i]}"
-
-      case "$argument" in
-        $pattern ) ;;
-        * ) result=1 ;;
-      esac
+function decode_plan_line {
+    for arg in "${@}"; do
+        echo -n "$(echo -n "${arg}" | base64 -d) "
     done
+}
 
-    # If the arguments matched, evaluate the command
-    # in a subshell. Otherwise, log the failure.
-    if [ $result -eq 0 ] ; then
-      set +e
-      ( eval "$command" )
-      status="$?"
-      set -e
-    else
-      eval "${_STUB_RESULT}"=1
+function check_plan_and_update_run_results {
+    local stub_plan_file=${1}
+    local stub_run_index_file=${2}
+    local stub_run_error_file=${3}
+    local stub_index="$(cat "${stub_run_index_file}")"
+
+    if is_call_more_than_planned "${stub_index}" "${stub_plan_file}"; then
+        save_error \
+            "${stub_run_error_file}" \
+            "more calls than expected to mock '$(basename "${BASH_SOURCE[0]}")'" \
+            <(wc -l < "${stub_plan_file}") \
+            <(echo "$((stub_index+1))")
+
+        return
     fi
-  fi
-done < "${!_STUB_PLAN}"
 
+    local command_plan=$(sed -n "$((stub_index+1))p" "${stub_plan_file}")
+    local run_command="${command_plan}"
 
-if [ -n "${!_STUB_END}" ]; then
-  # Clean up the run file.
-  rm -f "${!_STUB_RUN}"
+    if [[ "${command_plan}" != "${command_plan/ : }" ]]; then
+        local expected_arguments=(${command_plan%% : *})
+        local run_command="${command_plan#* : }"
+    fi
 
-  # If the number of lines in the plan is larger than
-  # the requested index, we failed.
-  if [ $index -ge "${!_STUB_INDEX}" ]; then
-    eval "${_STUB_RESULT}"=1
-  fi
+    if [[ -n "${expected_arguments:+_}" ]]; then
+        local actual_arguments=($(
+            for a in "${@:4}"; do
+                if [[ -z "${a}" ]] || [[ "${a}" =~ '\ |\' ]]; then
+                    echo "$(echo -n "'${a}'" | base64 --wrap=0)"
+                else
+                    echo "$(echo -n "${a}" | base64 --wrap=0)"
+                fi
+            done
+        ))
 
-  # Return the result.
-  exit "${!_STUB_RESULT}"
+        if [[ "${#actual_arguments[@]}" != "${#expected_arguments[@]}" ]]; then
+            save_error \
+                "${stub_run_error_file}" \
+                "wrong number of expected args (${#expected_arguments[@]} != actual ${#actual_arguments[@]}) for call ${stub_index} to mock '$(basename "${BASH_SOURCE[0]}")'" \
+                <(decode_plan_line "${expected_arguments[@]}") \
+                <(decode_plan_line "${actual_arguments[@]}")
 
-else
-  # If the requested index is larger than the number
-  # of lines in the plan file, we failed.
-  if [ "${!_STUB_INDEX}" -gt $index ]; then
-    eval "${_STUB_RESULT}"=1
-  fi
+            return
+        fi
 
-  # Write out the run information.
-  { echo "${_STUB_INDEX}=$((${!_STUB_INDEX} + 1))"
-    echo "${_STUB_RESULT}=${!_STUB_RESULT}"
-  } > "${!_STUB_RUN}"
+        for (( i=0; i<${#actual_arguments[@]}; i++ )); do
+            local expected="${expected_arguments[$i]}"
+            local actual="${actual_arguments[$i]}"
 
-  exit "$status"
+            if [[ "${expected}" == "${BATS_MOCK_ANY_ARG_SENTINEL}" ]]; then
+                continue
+            fi
 
-fi
+            if [[ "${expected}" != "${actual}" ]]; then
+                save_error \
+                    "${stub_run_error_file}" \
+                    "incorrect arg ${i} for call ${stub_index} to mock '$(basename "${BASH_SOURCE[0]}")'" \
+                    <(decode_plan_line "${expected_arguments[@]}") \
+                    <(decode_plan_line "${actual_arguments[@]}")
+
+                return
+            fi
+        done
+    fi
+
+    echo "$((stub_index+1))" > "${stub_run_index_file}"
+
+    if [[ -z "${run_command}" ]]; then
+        ( true )
+    else
+        local decoded_run_command="$(decode_plan_line ${run_command})"
+        ( eval "${decoded_run_command}" )
+    fi
+}
+
+function main {
+    local program="$(basename "${BASH_SOURCE[0]}")"
+    local stub_plan_file="${BATS_MOCK_TMPDIR}/${program}-stub-plan"
+    local stub_run_index_file="${BATS_MOCK_TMPDIR}/${program}-stub-run-index"
+    local stub_run_error_file="${BATS_MOCK_TMPDIR}/${program}-stub-run-errors"
+
+    if [[ -f "${stub_run_error_file}" ]]; then
+        return
+    fi
+
+    check_plan_and_update_run_results \
+        "${stub_plan_file}" \
+        "${stub_run_index_file}" \
+        "${stub_run_error_file}" \
+        "${@}"
+}
+
+set -euo pipefail
+main "${@}"
