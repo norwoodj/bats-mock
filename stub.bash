@@ -63,7 +63,7 @@ function stub {
             if [[ "${a}" == ":" ]]; then
                 echo -n ": "
             # Quote empty string or strings that contain spaces
-            elif [[ -z "${a}" ]] || [[ "${a}" =~ '\ |\' ]]; then
+            elif [[ -z "${a}" ]] || grep -Eq "[[:space:]]" <(echo -n "${a}"); then
                 echo -n "$(echo -n "'${a}'" | base64 --wrap=0) "
             # All other symbols are printed as is
             else

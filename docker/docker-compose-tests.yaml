@@ -1,0 +1,12 @@
+version: "3.2"
+
+services:
+  bats-unit-tests:
+    image: bats-mock-bats:current
+    build:
+      context: .
+      dockerfile: Dockerfile-bats
+    volumes:
+      - ../bats-tests:/opt/testing/tests:ro
+      - ../binstub:/opt/testing/bats-mock/binstub:ro
+      - ../stub.bash:/opt/testing/bats-mock/stub.bash:ro
