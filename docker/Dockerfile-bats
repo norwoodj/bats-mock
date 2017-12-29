@@ -1,0 +1,38 @@
+FROM alpine:3.7
+LABEL maintainer="jnorwood@rmn.com"
+
+ARG BATS_VERSION=0.4.0
+ARG BATS_ASSERT_VERSION=0.3.0
+ARG BATS_SUPPORT_VERSION=0.3.0
+
+ENV BATS_VERSION=${BATS_VERSION}
+
+ARG TESTS_HOME=/opt/testing
+ENV TESTS_HOME=${TESTS_HOME}
+
+WORKDIR ${TESTS_HOME}
+
+RUN apk add --no-cache --repository http://dl-cdn.alpinelinux.org/alpine/edge/testing \
+        bash \
+        ca-certificates \
+        coreutils \
+        jq \
+        tar \
+        wget \
+    && wget https://github.com/sstephenson/bats/archive/v${BATS_VERSION}.tar.gz \
+    && tar xzf v${BATS_VERSION}.tar.gz \
+    && cd bats-${BATS_VERSION} \
+    && ./install.sh /usr/local \
+    && cd .. \
+    && rm -rvf bats-${BATS_VERSION} ${BATS_VERSION}.tar.gz \
+    && mkdir -p libs/bats \
+    && wget https://github.com/ztombol/bats-assert/archive/v${BATS_ASSERT_VERSION}.tar.gz && mv v${BATS_ASSERT_VERSION}.tar.gz bats-assert.tar.gz \
+    && wget https://github.com/ztombol/bats-support/archive/v${BATS_SUPPORT_VERSION}.tar.gz && mv v${BATS_SUPPORT_VERSION}.tar.gz bats-support.tar.gz \
+    && tar xzf bats-assert.tar.gz \
+    && tar xzf bats-support.tar.gz \
+    && mv -v bats-assert-${BATS_ASSERT_VERSION} libs/bats/bats-assert \
+    && mv -v bats-support-${BATS_SUPPORT_VERSION} libs/bats/bats-support \
+    && rm -rvf *.tar.gz
+
+COPY scripts/run-bats-tests /usr/bin/run-bats-tests
+ENTRYPOINT ["run-bats-tests"]

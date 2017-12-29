@@ -5,6 +5,9 @@
 : ${BATS_MOCK_BINDIR:="${BATS_MOCK_TMPDIR}/bin"}
 : ${BATS_MOCK_ANY_ARG_SENTINEL:="__ANY__"}
 
+readonly _ENCODED_BATS_MOCK_ANY_ARG_SENTINEL="$(echo -n "${BATS_MOCK_ANY_ARG_SENTINEL}" | base64)"
+
+
 function clean_json_input {
     local input_file=${1}
     cat "${input_file}" | base64 --wrap=0
@@ -55,17 +58,23 @@ function check_plan_and_update_run_results {
     fi
 
     local command_plan=$(sed -n "$((stub_index+1))p" "${stub_plan_file}")
-    local run_command="${command_plan}"
+    local expected_arguments=
+    local run_command=
+    local accumulating="expected_arguments"
 
-    if [[ "${command_plan}" != "${command_plan/ : }" ]]; then
-        local expected_arguments=(${command_plan%% : *})
-        local run_command="${command_plan#* : }"
-    fi
+    for a in ${command_plan}; do
+        if [[ "${a}" == : ]]; then
+            accumulating="run_command"
+        else
+            typeset ${accumulating}="${!accumulating} ${a}"
+        fi
+    done
 
-    if [[ -n "${expected_arguments:+_}" ]]; then
+    if [[ -n "${run_command:+_}" ]]; then
+        local expected_arguments=(${expected_arguments:-})
         local actual_arguments=($(
             for a in "${@:4}"; do
-                if [[ -z "${a}" ]] || [[ "${a}" =~ '\ |\' ]]; then
+                if [[ -z "${a}" ]] || grep -Eq "[[:space:]]" <(echo -n "${a}"); then
                     echo "$(echo -n "'${a}'" | base64 --wrap=0)"
                 else
                     echo "$(echo -n "${a}" | base64 --wrap=0)"
@@ -87,7 +96,7 @@ function check_plan_and_update_run_results {
             local expected="${expected_arguments[$i]}"
             local actual="${actual_arguments[$i]}"
 
-            if [[ "${expected}" == "${BATS_MOCK_ANY_ARG_SENTINEL}" ]]; then
+            if [[ "${expected}" == "${_ENCODED_BATS_MOCK_ANY_ARG_SENTINEL}" ]]; then
                 continue
             fi
 
@@ -101,6 +110,8 @@ function check_plan_and_update_run_results {
                 return
             fi
         done
+    else
+        run_command="${expected_arguments}"
     fi
 
     echo "$((stub_index+1))" > "${stub_run_index_file}"

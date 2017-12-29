@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+
+: ${AWS_DEFAULT_REGION:="us-west-2"}
+: ${TESTS_DIRECTORY:=/opt/testing/tests}
+: ${RUN_TESTS:=}
+
+
+function usage {
+    echo "Usage:"
+    echo "  ${BASH_SOURCE[0]} [options]"
+    echo
+    echo "This script is used to run the bats tests on a set of bash scripts"
+    echo
+    echo "Options:"
+    echo "  --help, -h              Print this usage and exit"
+    echo "  --tests, -t             Set the RUN_TESTS variable that will run the specific test files provided, can be repeated. Default is all tests"
+    echo "                          Don't provide the .bats suffix, e.g. -t job-utilities-tests -t prepare-release-test"
+}
+
+function log {
+    local level=${1^^}
+    echo "$(date -u "+%FT%T%z") [${level}] - ${@:2}"
+}
+
+function run_tests {
+    if [[ -z "${RUN_TESTS}" ]]; then
+        log info "Running bats on all tests in ${TESTS_DIRECTORY}"
+        bats ${TESTS_DIRECTORY}/*.bats
+    else
+        log info "Running bats on tests ${RUN_TESTS}"
+        bats ${RUN_TESTS}
+    fi
+}
+
+function main {
+    while [[ "${1:-}" == -* ]]; do
+        case "${1}" in
+            --help | -h)             usage; return ;;
+            --tests | -t)            RUN_TESTS="${RUN_TESTS} ${TESTS_DIRECTORY}/${2}.bats"; shift ;;
+            --)                      shift; break ;;
+            -*)                      log error "Invalid option '${1}'!"; usage; return 1 ;;
+        esac
+
+        shift
+    done
+
+    if ! run_tests; then
+        echo
+        log error "Tests Failed!"
+        return 1
+    else
+        echo
+        log info "Tests Succeeded!"
+    fi
+}
+
+set -euo pipefail
+main "${@}"
